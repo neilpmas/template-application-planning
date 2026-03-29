@@ -305,6 +305,52 @@ Notes:
 ### Turborepo remote caching
 - Defer for now — add if CI build times become a problem
 
+## Local Development
+
+### Stack
+```
+React (Vite dev server :5173)
+    ↓
+Cloudflare Workers (wrangler dev :8787)
+    ↓
+Spring Boot (:8080)
+    ↓
+Postgres (Docker :5432)
+```
+
+### How to run
+
+**Infrastructure (Docker Compose):**
+```bash
+docker-compose up
+```
+Starts Postgres locally. Everything else runs natively for hot reload.
+
+**Backend:**
+```bash
+./mvnw spring-boot:run
+```
+
+**BFF:**
+```bash
+wrangler dev
+```
+Cloudflare KV is simulated in memory by Wrangler — no real Cloudflare account needed locally.
+
+**Frontend:**
+```bash
+npm run dev
+```
+
+### Auth0
+No local equivalent — use a real Auth0 dev tenant (free tier). Register a separate Auth0 application for local dev so local and production credentials are isolated.
+
+### Environment variables
+Each layer has a local config file (gitignored):
+- Spring Boot: `application-local.yml`
+- BFF: `.dev.vars` (Wrangler convention)
+- React: `.env.local` (Vite convention)
+
 ## Cost Philosophy
 
 Apps are built to be cheap at rest. The model is: low cost until something takes off, then invest in that one.
