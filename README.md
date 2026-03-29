@@ -261,6 +261,50 @@ Notes:
 - Spring Boot 3+ has built-in Testcontainers support — minimal boilerplate
 - TDD for Spring domain logic; test-after acceptable elsewhere while scaffolding
 
+## Branching Strategy
+
+**GitHub Flow** — `main` is always deployable, all work happens on short-lived branches.
+
+- Branch naming: `claude/<short-description>` e.g. `claude/add-login-page`, `claude/phase-12-oauth-upgrade`
+- PRs are small and focused — one thing at a time
+- PRs are short-lived — merge, close, or rebase within a few days. Stale PRs are closed and reopened fresh.
+- Branch protection on `main` — CI must pass before merge
+- Claude works in a worktree → raises a PR → you review and merge
+
+## CI/CD
+
+**GitHub Actions** — all repos follow the same pattern.
+
+### On pull request
+- Lint
+- Unit tests
+- Integration tests (Testcontainers — Docker available on Actions runners, no extra setup)
+- Build
+
+### On merge to main
+- Everything above, plus deploy
+
+### Deploy targets
+| Layer | Tool | Target |
+|---|---|---|
+| Backend | `flyctl` GitHub Action | Fly.io |
+| Frontend + BFF | Wrangler GitHub Action | Cloudflare Pages + Workers |
+
+### Environments
+- Production only for now — merge to main deploys straight to prod
+- Staging can be added per project if needed
+
+### Database migrations
+- Run automatically as part of deploy (Flyway)
+- If a migration fails, deploy fails
+
+### Secrets
+- GitHub Actions secrets per repo
+- Revisit centralised secrets management (e.g. Doppler) if managing many projects becomes painful
+
+### Turborepo remote caching
+- Defer for now — add if CI build times become a problem
+
 ## Multi-App Strategy
 
 When running multiple apps on the same stack:
