@@ -52,12 +52,25 @@ Spring Boot validates JWTs from all clients the same way — it doesn't distingu
 
 ## Stack
 
-### Frontend & BFF
+### Frontend & BFF — Turborepo monorepo
+- **Turborepo** — monorepo managing web, mobile, and BFF as packages
 - **React** — web UI, hosted on Cloudflare Pages
-- **Cloudflare Workers** — BFF, auth proxy, request routing
+- **React Native** — iOS and Android (Auth0 RN SDK, `expo-secure-store`)
+- **Cloudflare Workers** — BFF, auth proxy, request routing (web only)
 - **Hono** — router for the BFF
 - **[Bezzie](https://github.com/neilpmas/bezzie)** — BFF OAuth 2.0 library (open source, built for this stack)
 - **Cloudflare KV** — session storage
+
+```
+<app>/
+  apps/
+    web/        ← React (Cloudflare Pages)
+    mobile/     ← React Native (iOS + Android)
+    bff/        ← Cloudflare Workers + Bezzie
+  packages/
+    types/      ← shared TypeScript types
+    api-client/ ← shared API client
+```
 
 ### Backend
 - **Spring Boot** (Java) — core business logic
