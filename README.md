@@ -305,6 +305,51 @@ Notes:
 ### Turborepo remote caching
 - Defer for now — add if CI build times become a problem
 
+## Cost Philosophy
+
+Apps are built to be cheap at rest. The model is: low cost until something takes off, then invest in that one.
+
+| Service | Cost at rest | Notes |
+|---|---|---|
+| Fly.io | ~$1.94/month per app | Smallest machine. Java can't scale to zero — this is the floor. |
+| Supabase | Free | Pauses after 1 week inactivity on free plan. Fine for early stage. |
+| Auth0 | Free | 7,500 active users across all apps on free tier. |
+| Cloudflare | Free | Pages + Workers free tier is generous. |
+
+4 apps running ≈ $8/month total. If an app gets no traction after a few months, shut it down. When one takes off, scale that one.
+
+**Rules:**
+- Don't over-engineer infrastructure on day one
+- Review and cull dead apps every few months
+- Upgrade infrastructure for the app that's working, not all of them
+
+## Observability
+
+### Philosophy
+Start lean. Add proper observability when an app gets real traffic.
+
+### From day one (free, zero config)
+- **Fly.io built-in logs** — backend logs, always on
+- **Cloudflare Workers logs** — BFF logs, always on
+- **Sentry** (free tier) — frontend error tracking, one Sentry org, one project per app
+
+### When an app gets traction
+- **Axiom** — unified log aggregation for backend + BFF + Auth0 events
+- All logs tagged with `app`, `env`, `layer` — one dataset, query across everything
+- **Micrometer → Grafana Cloud** — JVM metrics, request rates, error rates
+- **Auth0 log streaming → Axiom** — login events, token issues, suspicious activity
+
+### Log format (when Axiom is added)
+```json
+{
+  "app": "my-app-name",
+  "env": "production",
+  "layer": "backend",
+  "level": "error",
+  "message": "..."
+}
+```
+
 ## Multi-App Strategy
 
 When running multiple apps on the same stack:
