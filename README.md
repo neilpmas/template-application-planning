@@ -1,42 +1,68 @@
-# Template Application
+# Template Application — Planning
 
-A base template used to spin up new projects with a consistent, repeatable tech stack.
+Architecture, decisions, and workflow guide for the template application stack. This repo is the starting point for every new project built on this stack.
+
+## Repos
+
+| Repo | Purpose |
+|---|---|
+| [template-application-planning](https://github.com/neilpmas/template-application-planning) | This repo — architecture, decisions, workflow guide |
+| [template-application-frontend](https://github.com/neilpmas/template-application-frontend) | React + Cloudflare Workers BFF |
+| [template-application-backend](https://github.com/neilpmas/template-application-backend) | Spring Boot backend |
+
+---
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  Cloudflare                      │
-│  ┌─────────────┐      ┌──────────────────────┐  │
-│  │  React App  │ ───► │  BFF (CF Workers)    │  │
-│  └─────────────┘      └──────────┬───────────┘  │
-└─────────────────────────────────────────────────┘
-                                   │
-                                   ▼
-                    ┌──────────────────────────┐
-                    │  Spring Boot on Fly.io   │
-                    └──────────────────────────┘
-                                   │
-                         ┌─────────┴─────────┐
-                         │                   │
-                         ▼                   ▼
-                     Supabase             Auth0
-                   (Database)        (Authentication)
+                    ┌─────────────────────────────────────────────────┐
+                    │                  Cloudflare                      │
+                    │  ┌─────────────┐      ┌──────────────────────┐  │
+  Browser ────────► │  │  React App  │ ───► │  BFF (CF Workers)    │  │
+  (HTTP/3)          │  └─────────────┘      └──────────┬───────────┘  │
+                    └─────────────────────────────────────────────────┘
+                                                        │ gRPC-Web (HTTP/2)
+                                                        ▼
+  Mobile/Desktop ──────────────────────────────────────►
+  (Bearer token, direct)                  ┌─────────────────────────┐
+                                          │  Spring Boot on Fly.io  │
+                                          │  (Spring Modulith)      │
+                                          └─────────────────────────┘
+                                                        │
+                                             ┌──────────┴──────────┐
+                                             │                     │
+                                             ▼                     ▼
+                                         Supabase               Auth0
+                                       (Database)          (Authentication)
 ```
+
+### Client model
+
+The BFF exists solely to protect browser-based clients, where tokens cannot be stored safely. Mobile and desktop clients have secure OS credential stores and talk directly to Spring Boot.
+
+| Client | Auth pattern | Talks to |
+|---|---|---|
+| React (web) | Session cookie via BFF (JWTs never touch browser) | BFF → Spring Boot |
+| React Native (mobile) | Bearer token direct from Auth0 | Spring Boot directly |
+| Desktop | Bearer token direct from Auth0 | Spring Boot directly |
+
+Spring Boot validates JWTs from all clients the same way — it doesn't distinguish between BFF-forwarded and direct requests.
+
+---
 
 ## Stack
 
-### Frontend
-- **React** — web UI
-- **React Native** — planned for mobile apps
-- **Hosted on**: Cloudflare Pages
-
-### Backend for Frontend (BFF)
-- **Cloudflare Workers** — lightweight proxy layer between frontend and backend
-- Handles request routing, auth token forwarding, and response shaping
+### Frontend & BFF
+- **React** — web UI, hosted on Cloudflare Pages
+- **Cloudflare Workers** — BFF, auth proxy, request routing
+- **Hono** — router for the BFF
+- **[Bezzie](https://github.com/neilpmas/bezzie)** — BFF OAuth 2.0 library (open source, built for this stack)
+- **Cloudflare KV** — session storage
 
 ### Backend
-- **Spring Boot** (Java)
+- **Spring Boot** (Java) — core business logic
+- **Spring Modulith** — enforces clean module boundaries
+- **Maven** — build tool
 - **Hosted on**: Fly.io
 
 ### Database
@@ -45,22 +71,40 @@ A base template used to spin up new projects with a consistent, repeatable tech 
 ### Authentication
 - **Auth0** — identity and access management
 
+---
+
+## Protocol Decisions
+
+### Browser → Cloudflare edge
+HTTP/3 — handled automatically by Cloudflare. No configuration needed.
+
+### BFF → Spring Boot
+**gRPC-Web over HTTP/2** — Cloudflare Workers can call gRPC-Web endpoints via `fetch()`. Spring Boot exposes a gRPC-Web endpoint. This gives strongly typed contracts (Protobuf), HTTP/2 efficiency, and avoids the Workers runtime limitations of native gRPC (which requires HTTP/2 trailers not accessible via `fetch()`).
+
+> Note: [Connect protocol](https://connectrpc.com) would be the ideal long-term choice here but has no official Java implementation yet. Worth revisiting when it lands.
+
+### Mobile/Desktop → Spring Boot
+Standard HTTPS with Bearer token. Protocol TBD per client — REST is the default.
+
+### Spring Boot → Supabase
+JDBC over TCP — protocol not a concern here.
+
+---
+
 ## Authentication Detail
 
 ### Approach: BFF-based OAuth (OAuth 2.0 for Browser-Based Apps, BCP212)
 
-This template follows the BFF pattern as recommended by the OAuth 2.0 for Browser-Based Apps spec. The key principle is that **JWTs never touch the browser** — the BFF owns the OAuth flow and issues a session cookie to the frontend instead.
+The BFF pattern keeps JWTs out of the browser entirely. The BFF owns the OAuth flow and issues a session cookie to React instead.
 
-This eliminates token exposure in the browser (no localStorage, no JS-accessible tokens).
+### Auth0 Setup
 
-### Auth0 Tenant Setup
+Two Auth0 applications per project:
 
-Each project gets its own Auth0 tenant (or application within a shared tenant). Two Auth0 applications are registered:
-
-- **Regular Web Application** — for the BFF/Cloudflare Worker (Authorization Code + PKCE, has a client secret)
+- **Regular Web Application** — for the BFF (Authorization Code + PKCE, has a client secret)
 - **API** — represents the Spring Boot backend, defines the audience
 
-Key Auth0 config values needed per project:
+Key config values:
 
 | Setting | Description |
 |---|---|
@@ -71,46 +115,35 @@ Key Auth0 config values needed per project:
 
 ### Frontend (React)
 
-The frontend holds **no tokens**. It:
+The frontend holds no tokens. It:
 
-- Redirects to the BFF's `/auth/login` endpoint to initiate login
+- Redirects to BFF `/auth/login` to initiate login
 - Receives an `HttpOnly; Secure; SameSite=Strict` session cookie from the BFF on completion
-- Makes all API calls to the BFF using the session cookie (no Authorization header needed)
-- Calls the BFF's `/auth/logout` endpoint to end the session
+- Makes all API calls to the BFF using the session cookie
+- Calls BFF `/auth/logout` to end the session
 
-### BFF (Cloudflare Workers)
+### BFF (Cloudflare Workers + Bezzie)
 
-The BFF is the OAuth client — it owns the full auth flow. Implemented using [`oauth4webapi`](https://github.com/panva/oauth4webapi), which is spec-compliant and runs natively in the Workers runtime (uses Web Crypto API, no Node.js dependencies).
+The BFF owns the full OAuth flow.
 
 **Login flow:**
 1. React redirects to BFF `/auth/login`
-2. BFF redirects user to Auth0 with Authorization Code + PKCE
-3. Auth0 redirects back to BFF `/auth/callback` with the code
-4. BFF exchanges the code for access + refresh tokens (using client secret)
-5. BFF stores tokens in **Cloudflare KV** (keyed by a generated session ID)
-6. BFF issues an `HttpOnly` session cookie to the browser and redirects to the app
+2. BFF redirects to Auth0 (Authorization Code + PKCE)
+3. Auth0 redirects back to BFF `/auth/callback`
+4. BFF exchanges code for tokens, stores them in Cloudflare KV
+5. BFF issues `HttpOnly` session cookie to the browser
 
 **Per-request flow:**
 1. React sends request to BFF with session cookie
-2. BFF looks up the session in KV, retrieves the access token
-3. BFF validates the JWT (using Auth0 JWKS via Web Crypto API)
-4. If the token is expired, BFF uses the refresh token to obtain a new one and updates KV
-5. BFF forwards the request to Spring Boot with `Authorization: Bearer <token>`
-
-**Session storage (Cloudflare KV):**
-- Session ID → `{ accessToken, refreshToken, expiresAt }`
-- KV TTL aligned with refresh token lifetime
-- KV is eventually consistent — acceptable for session reads
+2. BFF validates the session, refreshes the token if expired
+3. BFF forwards the request to Spring Boot via gRPC-Web with Bearer token
 
 ### Backend (Spring Boot)
 
-Spring Boot validates the JWT on every protected request. It trusts only requests from the BFF (internal network on Fly.io):
+Spring Boot is an OAuth 2.0 resource server. It validates JWTs on every protected request — regardless of whether the request came from the BFF or a mobile/desktop client.
 
 - Uses `spring-boot-starter-oauth2-resource-server`
-- Configured with the Auth0 `issuer-uri` and `audience`
-- JWT is validated against Auth0's JWKS endpoint automatically
-
-`application.yml` config:
+- Validates against Auth0's JWKS endpoint automatically
 
 ```yaml
 spring:
@@ -122,13 +155,13 @@ spring:
           audiences: https://api.yourproject.com
 ```
 
-Protect endpoints using standard Spring Security annotations e.g. `@PreAuthorize("isAuthenticated()")`.
-
 ### Roles & Permissions
 
-- Roles and permissions are defined in Auth0 and included in the JWT as a custom claim (e.g. `permissions`)
-- Enable **RBAC** and **Add Permissions in the Access Token** in the Auth0 API settings
-- Spring Boot reads the `permissions` claim to enforce fine-grained access control
+Defined in Auth0, included in the JWT as a `permissions` claim. Enable **RBAC** and **Add Permissions in the Access Token** in Auth0 API settings.
+
+```java
+@PreAuthorize("hasAuthority('read:data')")
+```
 
 ### Auth Flow Summary
 
@@ -140,17 +173,67 @@ User → React → BFF /auth/login → Auth0 (Authorization Code + PKCE)
                     BFF exchanges code → tokens stored in KV
                     BFF issues HttpOnly session cookie → React
                                         │
-React (cookie) → BFF → validates JWT → Spring Boot (Bearer token)
+React (cookie) → BFF → validates session → Spring Boot (gRPC-Web + Bearer token)
 ```
 
-## BFF Auth Library
+---
 
-The BFF auth layer is provided by **[Portcullis](../portcullis/README.md)** — a standalone open source Cloudflare Workers auth library built for this stack.
+## Project Workflow
 
-Until Portcullis is built, the BFF auth layer is generated per project.
+This template defines the end-to-end process for starting a new project. Follow these phases in order.
+
+### Phase 1 — Define the problem
+- What does this product do?
+- Who are the users?
+- What is the core use case?
+
+### Phase 2 — Domain model
+- Key entities and relationships
+- Data model (tables, fields)
+
+### Phase 3 — API contract
+- gRPC service definitions (.proto files)
+- Endpoint list, request/response shapes
+- Agreed before frontend or backend work starts
+
+### Phase 4 — Figma
+- Wireframes for key screens
+- Component inventory
+- Note: free Figma tier (3 pages per file)
+
+### Phase 5 — Backend scaffold
+- Spring Boot + Maven + Spring Modulith
+- Module structure defined upfront (e.g. `auth`, `api`, `domain`, `infrastructure`)
+- Supabase/Postgres connection
+- Auth0 resource server config
+- gRPC-Web endpoint
+
+### Phase 6 — BFF scaffold
+- Cloudflare Worker + Hono + Bezzie
+- Wire in gRPC-Web client for Spring Boot
+- Auth flow end-to-end
+
+### Phase 7 — Frontend scaffold
+- React + Vite
+- Component library decision (e.g. shadcn/ui)
+- Auth flow (login, session cookie, logout)
+- First protected page
+
+### Phase 8 — Wire together
+- End-to-end auth flow working
+- First real API call from React → BFF → Spring Boot → Supabase
+
+### Phase 9 — Deploy
+- Backend: Fly.io
+- Frontend + BFF: Cloudflare Pages + Workers
+- CI/CD: GitHub Actions
+
+---
 
 ## Principles
 
 - Same stack across every project for consistency and reuse
 - BFF pattern keeps the frontend decoupled from backend changes
-- Git is the source of truth for versioning — no manual version labels
+- Spring Modulith enforces module boundaries from day one
+- Git is the source of truth — no manual version labels
+- Restart Claude between major phases to keep context clean
