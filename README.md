@@ -243,6 +243,19 @@ This template defines the end-to-end process for starting a new project. Follow 
 
 ---
 
+## Multi-App Strategy
+
+When running multiple apps on the same stack:
+
+- **One Auth0 tenant** — shared across all apps. Same user identity, SSO possible. Users don't need to re-register per app.
+- **One Spring Boot + Supabase per app** — complete data isolation. Apps are independent and unrelated.
+- **One Cloudflare Workers BFF per app** — each app has its own deployment.
+
+Auth0 setup per app:
+- One **Regular Web Application** (for the BFF)
+- One **API** (for the Spring Boot backend, defines the audience)
+- RBAC roles and permissions are scoped per API — no bleed between apps
+
 ## Principles
 
 - Same stack across every project for consistency and reuse
