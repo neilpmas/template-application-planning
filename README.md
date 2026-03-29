@@ -246,6 +246,21 @@ This template defines the end-to-end process for starting a new project. Follow 
 
 ---
 
+## Testing Strategy
+
+| Layer | Approach |
+|---|---|
+| Spring Boot — unit | JUnit 5, plain unit tests for domain logic (TDD) |
+| Spring Boot — integration | Testcontainers — real Postgres, no mocks |
+| BFF (Workers) | Vitest + `@cloudflare/vitest-pool-workers` |
+| React | Vitest + React Testing Library |
+| E2E | Playwright |
+
+Notes:
+- Docker must be running locally for Testcontainers
+- Spring Boot 3+ has built-in Testcontainers support — minimal boilerplate
+- TDD for Spring domain logic; test-after acceptable elsewhere while scaffolding
+
 ## Multi-App Strategy
 
 When running multiple apps on the same stack:
