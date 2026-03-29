@@ -55,6 +55,9 @@ Spring Boot validates JWTs from all clients the same way — it doesn't distingu
 ### Frontend & BFF — Turborepo monorepo
 - **Turborepo** — monorepo managing web, mobile, and BFF as packages
 - **React** — web UI, hosted on Cloudflare Pages
+- **Vite** — build tool
+- **Tailwind CSS** — utility-first styling
+- **shadcn/ui** — component library (copy-paste, Radix UI primitives, you own the code)
 - **React Native** — iOS and Android (Auth0 RN SDK, `expo-secure-store`)
 - **Cloudflare Workers** — BFF, auth proxy, request routing (web only)
 - **Hono** — router for the BFF
