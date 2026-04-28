@@ -194,9 +194,9 @@ React (cookie) → BFF → validates session → Spring Boot (gRPC-Web + Bearer 
 
 ---
 
-## Project Workflow
+## Starting a New App
 
-This template defines the end-to-end process for starting a new project. Follow these phases in order.
+Do these phases before writing any code. The template handles everything after.
 
 ### Phase 1 — Define the problem
 - What does this product do?
@@ -216,33 +216,6 @@ This template defines the end-to-end process for starting a new project. Follow 
 - Wireframes for key screens
 - Component inventory
 - Note: free Figma tier (3 pages per file)
-
-### Phase 5 — Backend scaffold
-- Spring Boot + Maven + Spring Modulith
-- Module structure defined upfront (e.g. `auth`, `api`, `domain`, `infrastructure`)
-- Supabase/Postgres connection
-- Auth0 resource server config
-- gRPC-Web endpoint
-
-### Phase 6 — BFF scaffold
-- Cloudflare Worker + Hono + Bezzie
-- Wire in gRPC-Web client for Spring Boot
-- Auth flow end-to-end
-
-### Phase 7 — Frontend scaffold
-- React + Vite
-- Component library decision (e.g. shadcn/ui)
-- Auth flow (login, session cookie, logout)
-- First protected page
-
-### Phase 8 — Wire together
-- End-to-end auth flow working
-- First real API call from React → BFF → Spring Boot → Supabase
-
-### Phase 9 — Deploy
-- Backend: Fly.io
-- Frontend + BFF: Cloudflare Pages + Workers
-- CI/CD: GitHub Actions
 
 ---
 
