@@ -1,6 +1,6 @@
 # Template Application — Planning
 
-Architecture, decisions, and workflow guide for the template application stack. This repo is the starting point for every new project built on this stack.
+Architecture, decisions, and workflow guide for the template application stack. Read this before working in the frontend or backend repos.
 
 ## Repos
 
@@ -22,9 +22,10 @@ Architecture, decisions, and workflow guide for the template application stack. 
   (HTTP/3)          │  └─────────────┘      └──────────┬───────────┘  │
                     └─────────────────────────────────────────────────┘
                                                         │ gRPC-Web (HTTP/2)
+                                                        │ Bearer token
                                                         ▼
-  Mobile/Desktop ──────────────────────────────────────►
-  (Bearer token, direct)                  ┌─────────────────────────┐
+  Mobile / Desktop ──────────────────────────────────►
+  (HTTPS, Bearer token, direct)           ┌─────────────────────────┐
                                           │  Spring Boot on Fly.io  │
                                           │  (Spring Modulith)      │
                                           └─────────────────────────┘
@@ -32,37 +33,40 @@ Architecture, decisions, and workflow guide for the template application stack. 
                                              ┌──────────┴──────────┐
                                              │                     │
                                              ▼                     ▼
-                                         Supabase               Auth0
-                                       (Database)          (Authentication)
+                                           Neon                 Auth0
+                                        (Postgres)       (JWKS endpoint —
+                                                         token validation)
 ```
 
 ### Client model
 
-The BFF exists solely to protect browser-based clients, where tokens cannot be stored safely. Mobile and desktop clients have secure OS credential stores and talk directly to Spring Boot.
+The BFF exists solely to protect browser-based clients — browsers cannot store tokens safely. Mobile and desktop clients have secure OS credential stores and talk directly to Spring Boot.
 
 | Client | Auth pattern | Talks to |
 |---|---|---|
-| React (web) | Session cookie via BFF (JWTs never touch browser) | BFF → Spring Boot |
+| React (web) | Session cookie via BFF — JWTs never touch the browser | BFF → Spring Boot |
 | React Native (mobile) | Bearer token direct from Auth0 | Spring Boot directly |
 | Desktop | Bearer token direct from Auth0 | Spring Boot directly |
 
-Spring Boot validates JWTs from all clients the same way — it doesn't distinguish between BFF-forwarded and direct requests.
+Spring Boot validates JWTs from all clients identically — it doesn't distinguish between BFF-forwarded and direct requests.
 
 ---
 
 ## Stack
 
 ### Frontend & BFF — Turborepo monorepo
-- **Turborepo** — monorepo managing web, mobile, and BFF as packages
-- **React** — web UI, hosted on Cloudflare Pages
-- **Vite** — build tool
-- **Tailwind CSS** — utility-first styling
-- **shadcn/ui** — component library (copy-paste, Radix UI primitives, you own the code)
-- **React Native** — iOS and Android (Auth0 RN SDK, `expo-secure-store`)
-- **Cloudflare Workers** — BFF, auth proxy, request routing (web only)
-- **Hono** — router for the BFF
-- **[Bezzie](https://github.com/neilpmas/bezzie)** — BFF OAuth 2.0 library (open source, built for this stack)
-- **Cloudflare KV** — session storage
+
+| Technology | Version | Purpose |
+|---|---|---|
+| React | 19 | Web UI |
+| Vite | 8 | Build tool |
+| Tailwind CSS | 4 | Styling |
+| shadcn/ui | — | Component library (Radix UI, copy-paste, you own the code) |
+| Turborepo | — | Monorepo — web, mobile, BFF as packages |
+| Cloudflare Workers | — | BFF, auth proxy, gRPC-Web → backend |
+| [Bezzie](https://github.com/neilpmas/bezzie) | — | BFF OAuth 2.0 library (open source) |
+| Cloudflare KV | — | Session storage |
+| React Native | — | iOS and Android (Auth0 RN SDK, `expo-secure-store`) |
 
 ```
 <app>/
@@ -71,21 +75,48 @@ Spring Boot validates JWTs from all clients the same way — it doesn't distingu
     mobile/     ← React Native (iOS + Android)
     bff/        ← Cloudflare Workers + Bezzie
   packages/
+    proto/      ← Protobuf definitions + generated TypeScript gRPC-Web client
     types/      ← shared TypeScript types
     api-client/ ← shared API client
 ```
 
 ### Backend
-- **Spring Boot** (Java) — core business logic
-- **Spring Modulith** — enforces clean module boundaries
-- **Maven** — build tool
-- **Hosted on**: Fly.io
+
+| Technology | Version | Purpose |
+|---|---|---|
+| Spring Boot | 4.0.6 | Core business logic |
+| Spring Modulith | 2.0.6 | Enforces module boundaries |
+| Java | 25 | Language |
+| Maven | — | Build (wrapper included) |
+| Spring Data R2DBC | — | Reactive database access |
+| Flyway | 12.5.0 | Schema migrations |
 
 ### Database
-- **Supabase** — Postgres-based, managed database
+
+**[Neon](https://neon.tech)** — managed serverless Postgres. One Neon project per app.
+
+> **Critical:** Always use the **direct connection string** (port 5432), not the Neon pooler URL (port 6543). The transaction-mode pooler breaks R2DBC prepared statements.
+
+Two connection strings are needed — one for R2DBC (the app) and one for JDBC (Flyway migrations only):
+
+| Variable | Format | Used by |
+|---|---|---|
+| `R2DBC_URL` | `r2dbc:postgresql://ep-xxx.us-east-2.aws.neon.tech:5432/template` | Spring Data R2DBC |
+| `DATABASE_URL` | `jdbc:postgresql://ep-xxx.us-east-2.aws.neon.tech:5432/template` | Flyway |
+
+**Cost at rest:** Free tier. Neon autosuspends compute after ~5 minutes of inactivity; cold start is ~500ms. Pick the Neon region closest to your Fly.io machine.
 
 ### Authentication
-- **Auth0** — identity and access management
+
+**[Auth0](https://auth0.com)** — identity and access management.
+
+One Auth0 tenant shared across all apps on the stack. Same user identity, SSO possible, users don't re-register per app.
+
+Per app, register:
+- One **Regular Web Application** (for the BFF — has a client secret)
+- One **API** (represents the Spring Boot backend, defines the audience)
+
+RBAC roles and permissions are scoped per API — no bleed between apps.
 
 ---
 
@@ -95,71 +126,68 @@ Spring Boot validates JWTs from all clients the same way — it doesn't distingu
 HTTP/3 — handled automatically by Cloudflare. No configuration needed.
 
 ### BFF → Spring Boot
-**gRPC-Web over HTTP/2** — Cloudflare Workers can call gRPC-Web endpoints via `fetch()`. Spring Boot exposes a gRPC-Web endpoint. This gives strongly typed contracts (Protobuf), HTTP/2 efficiency, and avoids the Workers runtime limitations of native gRPC (which requires HTTP/2 trailers not accessible via `fetch()`).
+**gRPC-Web over HTTP/2** — Cloudflare Workers calls Spring Boot via gRPC-Web using `fetch()`. Gives strongly typed Protobuf contracts and HTTP/2 efficiency without hitting the Workers runtime limitation of native gRPC (which requires HTTP/2 trailers, inaccessible via `fetch()`).
 
-> Note: [Connect protocol](https://connectrpc.com) would be the ideal long-term choice here but has no official Java implementation yet. Worth revisiting when it lands.
+> [Connect protocol](https://connectrpc.com) would be the ideal long-term choice but has no official Java implementation yet. Worth revisiting when it lands.
 
 ### Mobile/Desktop → Spring Boot
-Standard HTTPS with Bearer token. Protocol TBD per client — REST is the default.
+Standard HTTPS with Bearer token. REST by default.
 
-### Spring Boot → Supabase
-JDBC over TCP — protocol not a concern here.
+### Spring Boot → Neon
+**R2DBC** over TCP — reactive, non-blocking. The app uses Spring Data R2DBC for all database access.
+
+**Flyway** uses a separate JDBC connection for migrations only — JDBC is synchronous and Flyway requires it.
+
+Both must use the **direct** Neon endpoint (port 5432), not the pooler.
 
 ---
 
 ## Authentication Detail
 
-### Approach: BFF-based OAuth (OAuth 2.0 for Browser-Based Apps, BCP212)
+### Web: BFF-based OAuth (BCP212)
 
-The BFF pattern keeps JWTs out of the browser entirely. The BFF owns the OAuth flow and issues a session cookie to React instead.
+The BFF pattern keeps JWTs out of the browser entirely.
 
-### Auth0 Setup
-
-Two Auth0 applications per project:
-
-- **Regular Web Application** — for the BFF (Authorization Code + PKCE, has a client secret)
-- **API** — represents the Spring Boot backend, defines the audience
-
-Key config values:
+**Auth0 setup:**
 
 | Setting | Description |
 |---|---|
-| `Domain` | e.g. `your-tenant.auth0.com` |
-| `Client ID` | Web application client ID |
-| `Client Secret` | Web application client secret (held only by the BFF) |
-| `Audience` | API identifier, e.g. `https://api.yourproject.com` |
+| `AUTH0_DOMAIN` | e.g. `your-tenant.auth0.com` |
+| `AUTH0_CLIENT_ID` | Web application client ID |
+| `AUTH0_CLIENT_SECRET` | Web application client secret — held only by the BFF Worker |
+| `AUTH0_AUDIENCE` | API identifier — must match `AUTH0_AUDIENCE` in the backend |
 
-### Frontend (React)
-
-The frontend holds no tokens. It:
-
-- Redirects to BFF `/auth/login` to initiate login
-- Receives an `HttpOnly; Secure; SameSite=Strict` session cookie from the BFF on completion
-- Makes all API calls to the BFF using the session cookie
-- Calls BFF `/auth/logout` to end the session
-
-### BFF (Cloudflare Workers + Bezzie)
-
-The BFF owns the full OAuth flow.
+The audience value must be identical in the BFF and Spring Boot. If they don't match, JWT validation fails.
 
 **Login flow:**
-1. React redirects to BFF `/auth/login`
-2. BFF redirects to Auth0 (Authorization Code + PKCE)
-3. Auth0 redirects back to BFF `/auth/callback`
-4. BFF exchanges code for tokens, stores them in Cloudflare KV
-5. BFF issues `HttpOnly` session cookie to the browser
+```
+React → BFF /auth/login → Auth0 (Authorization Code + PKCE)
+                                  │
+                             code returned
+                                  │
+             BFF exchanges code for tokens → stored in Cloudflare KV
+             BFF issues HttpOnly; Secure; SameSite=Strict session cookie → React
+```
 
 **Per-request flow:**
-1. React sends request to BFF with session cookie
-2. BFF validates the session, refreshes the token if expired
-3. BFF forwards the request to Spring Boot via gRPC-Web with Bearer token
+```
+React (session cookie) → BFF → validates session, refreshes token if expired
+                              → Spring Boot (gRPC-Web + Authorization: Bearer <token>)
+```
 
-### Backend (Spring Boot)
+### Mobile: RFC 8252 (OAuth for Native Apps)
 
-Spring Boot is an OAuth 2.0 resource server. It validates JWTs on every protected request — regardless of whether the request came from the BFF or a mobile/desktop client.
+```
+React Native → Auth0 SDK (Authorization Code + PKCE)
+                       │
+                  tokens stored in iOS Keychain / Android Keystore (expo-secure-store)
+                       │
+React Native (Authorization: Bearer <token>) → Spring Boot (direct)
+```
 
-- Uses `spring-boot-starter-oauth2-resource-server`
-- Validates against Auth0's JWKS endpoint automatically
+### Backend: Resource server
+
+Spring Boot validates JWTs on every protected request using Auth0's JWKS endpoint. Works identically for BFF-forwarded and direct mobile requests.
 
 ```yaml
 spring:
@@ -167,55 +195,94 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: https://your-tenant.auth0.com/
-          audiences: https://api.yourproject.com
+          issuer-uri: ${AUTH0_ISSUER_URI}   # https://your-tenant.auth0.com/
+          audiences: ${AUTH0_AUDIENCE}       # https://api.yourproject.com
 ```
 
-### Roles & Permissions
-
-Defined in Auth0, included in the JWT as a `permissions` claim. Enable **RBAC** and **Add Permissions in the Access Token** in Auth0 API settings.
+Roles and permissions are defined in Auth0, included in the JWT as a `permissions` claim. Enable **RBAC** and **Add Permissions in the Access Token** in the Auth0 API settings.
 
 ```java
 @PreAuthorize("hasAuthority('read:data')")
 ```
 
-### Auth Flow Summary
+---
+
+## Local Development
+
+### Prerequisites
+
+| Tool | Version | Install |
+|---|---|---|
+| Java | 25 | `brew install openjdk@25` or [SDKMAN](https://sdkman.io) |
+| Node.js | 20+ | [nodejs.org](https://nodejs.org) or `brew install node` |
+| npm | 11 | included with Node |
+| Docker | any | [Docker Desktop](https://www.docker.com/products/docker-desktop) |
+| Wrangler | latest | `npm install -g wrangler` |
+| Buf CLI | latest | `brew install bufbuild/buf/buf` (only if regenerating proto) |
+
+### Stack when running locally
 
 ```
-User → React → BFF /auth/login → Auth0 (Authorization Code + PKCE)
-                                        │
-                                   code returned
-                                        │
-                    BFF exchanges code → tokens stored in KV
-                    BFF issues HttpOnly session cookie → React
-                                        │
-React (cookie) → BFF → validates session → Spring Boot (gRPC-Web + Bearer token)
+React (Vite dev server — port 5173)
+    ↓
+Cloudflare Workers (wrangler dev — port 8787)
+    ↓
+Spring Boot (port 8080 HTTP, port 9090 gRPC)
+    ↓
+Postgres (Docker — port 5432)
 ```
+
+### Getting started (all three repos)
+
+1. **Start Postgres:**
+   ```bash
+   docker run -d -p 5432:5432 -e POSTGRES_DB=template -e POSTGRES_PASSWORD=password postgres:17
+   ```
+
+2. **Backend** — copy and fill `src/main/resources/application-local.yml.example` → `application-local.yml`, then:
+   ```bash
+   cd template-application-backend
+   ./mvnw spring-boot:run
+   ```
+
+3. **Frontend + BFF** — copy `apps/bff/.dev.vars.example` → `apps/bff/.dev.vars` and `apps/web/.env.example` → `apps/web/.env.local`, then:
+   ```bash
+   cd template-application-frontend
+   npm install
+   npm run dev
+   ```
+
+4. **Open** `http://localhost:5173`
+
+Auth0: use a real Auth0 dev tenant (free tier). Register a separate application for local dev so local and production credentials are isolated.
 
 ---
 
 ## Starting a New App
 
-Do these phases before writing any code. The template handles everything after.
+Do these steps before writing any feature code. The template handles all the infrastructure.
 
-### Phase 1 — Define the problem
-- What does this product do?
-- Who are the users?
-- What is the core use case?
+### 1. Clone the template repos
 
-### Phase 2 — Domain model
-- Key entities and relationships
-- Data model (tables, fields)
+```bash
+gh repo create my-org/myapp-frontend --template neilpmas/template-application-frontend --public
+gh repo create my-org/myapp-backend  --template neilpmas/template-application-backend  --public
+```
 
-### Phase 3 — API contract
-- gRPC service definitions (.proto files)
-- Endpoint list, request/response shapes
-- Agreed before frontend or backend work starts
+### 2. Provision infrastructure
 
-### Phase 4 — Figma
-- Wireframes for key screens
-- Component inventory
-- Note: free Figma tier (3 pages per file)
+In order:
+1. **Neon** — create a new project, copy the direct connection strings (port 5432)
+2. **Auth0** — create a Regular Web Application (for BFF) and an API (for backend)
+3. **Fly.io** — `fly launch` in the backend repo
+4. **Cloudflare** — `wrangler deploy` in the BFF app
+
+### 3. Define the domain
+
+Before writing feature code:
+- What does this product do? Who are the users? What is the core use case?
+- Key entities and relationships, data model (tables, fields)
+- gRPC service definitions (`.proto` files) — agree on API contract before frontend or backend work starts
 
 ---
 
@@ -231,161 +298,83 @@ Do these phases before writing any code. The template handles everything after.
 
 Notes:
 - Docker must be running locally for Testcontainers
-- Spring Boot 3+ has built-in Testcontainers support — minimal boilerplate
+- Spring Boot 4+ has built-in Testcontainers support — minimal boilerplate
 - TDD for Spring domain logic; test-after acceptable elsewhere while scaffolding
+
+---
 
 ## Branching Strategy
 
-**GitHub Flow** — `main` is always deployable, all work happens on short-lived branches.
+**GitHub Flow** — `main` is always deployable, all work on short-lived branches.
 
-- Branch naming: `claude/<short-description>` e.g. `claude/add-login-page`, `claude/phase-12-oauth-upgrade`
+- Branch naming: `claude/<short-description>` e.g. `claude/add-login-page`
 - PRs are small and focused — one thing at a time
-- PRs are short-lived — merge, close, or rebase within a few days. Stale PRs are closed and reopened fresh.
 - Branch protection on `main` — CI must pass before merge
-- Claude works in a worktree → raises a PR → you review and merge
+
+---
 
 ## CI/CD
 
 **GitHub Actions** — all repos follow the same pattern.
 
-### On pull request
-- Lint
-- Unit tests
-- Integration tests (Testcontainers — Docker available on Actions runners, no extra setup)
-- Build
+| Trigger | Steps |
+|---|---|
+| Pull request | lint → unit tests → integration tests → build |
+| Merge to main | everything above + deploy |
 
-### On merge to main
-- Everything above, plus deploy
-
-### Deploy targets
-| Layer | Tool | Target |
+| Layer | Deploy tool | Target |
 |---|---|---|
 | Backend | `flyctl` GitHub Action | Fly.io |
 | Frontend + BFF | Wrangler GitHub Action | Cloudflare Pages + Workers |
 
-### Environments
-- Production only for now — merge to main deploys straight to prod
-- Staging can be added per project if needed
+Flyway migrations run automatically on Spring Boot startup. If a migration fails, the deploy fails and the previous version stays live.
 
-### Database migrations
-- Run automatically as part of deploy (Flyway)
-- If a migration fails, deploy fails
-
-### Secrets
-- GitHub Actions secrets per repo
-- Revisit centralised secrets management (e.g. Doppler) if managing many projects becomes painful
-
-### Turborepo remote caching
-- Defer for now — add if CI build times become a problem
-
-## Local Development
-
-### Stack
-```
-React (Vite dev server :5173)
-    ↓
-Cloudflare Workers (wrangler dev :8787)
-    ↓
-Spring Boot (:8080)
-    ↓
-Postgres (Docker :5432)
-```
-
-### How to run
-
-**Infrastructure (Docker Compose):**
-```bash
-docker-compose up
-```
-Starts Postgres locally. Everything else runs natively for hot reload.
-
-**Backend:**
-```bash
-./mvnw spring-boot:run
-```
-
-**BFF:**
-```bash
-wrangler dev
-```
-Cloudflare KV is simulated in memory by Wrangler — no real Cloudflare account needed locally.
-
-**Frontend:**
-```bash
-npm run dev
-```
-
-### Auth0
-No local equivalent — use a real Auth0 dev tenant (free tier). Register a separate Auth0 application for local dev so local and production credentials are isolated.
-
-### Environment variables
-Each layer has a local config file (gitignored):
-- Spring Boot: `application-local.yml`
-- BFF: `.dev.vars` (Wrangler convention)
-- React: `.env.local` (Vite convention)
+---
 
 ## Cost Philosophy
 
-Apps are built to be cheap at rest. The model is: low cost until something takes off, then invest in that one.
+Apps are cheap at rest. Run many experiments, invest in the ones that get traction.
 
 | Service | Cost at rest | Notes |
 |---|---|---|
-| Fly.io | ~$1.94/month per app | Smallest machine. Java can't scale to zero — this is the floor. |
-| Supabase | Free | Pauses after 1 week inactivity on free plan. Fine for early stage. |
+| Fly.io | ~$1.94/month | Smallest machine. Java can't scale to zero — this is the floor. |
+| Neon | Free | Autosuspends after ~5 min inactivity. Cold start ~500ms. One project per app. |
 | Auth0 | Free | 7,500 active users across all apps on free tier. |
 | Cloudflare | Free | Pages + Workers free tier is generous. |
 
-4 apps running ≈ $8/month total. If an app gets no traction after a few months, shut it down. When one takes off, scale that one.
+4 apps ≈ $8/month. Shut down apps with no traction after a few months. Upgrade infrastructure only for the app that's working.
 
-**Rules:**
-- Don't over-engineer infrastructure on day one
-- Review and cull dead apps every few months
-- Upgrade infrastructure for the app that's working, not all of them
+---
 
 ## Observability
-
-### Philosophy
-Start lean. Add proper observability when an app gets real traffic.
 
 ### From day one (free, zero config)
 - **Fly.io built-in logs** — backend logs, always on
 - **Cloudflare Workers logs** — BFF logs, always on
-- **Sentry** (free tier) — frontend error tracking, one Sentry org, one project per app
+- **Sentry** (free tier) — frontend error tracking
 
 ### When an app gets traction
-- **Axiom** — unified log aggregation for backend + BFF + Auth0 events
-- All logs tagged with `app`, `env`, `layer` — one dataset, query across everything
+- **Axiom** — unified log aggregation across backend + BFF + Auth0 events
 - **Micrometer → Grafana Cloud** — JVM metrics, request rates, error rates
-- **Auth0 log streaming → Axiom** — login events, token issues, suspicious activity
+- **Auth0 log streaming → Axiom** — login events, token issues
 
-### Log format (when Axiom is added)
+Log format (structured JSON, tag every log line):
 ```json
 {
-  "app": "my-app-name",
+  "app": "myapp",
   "env": "production",
   "layer": "backend",
-  "level": "error",
+  "level": "info",
   "message": "..."
 }
 ```
 
-## Multi-App Strategy
-
-When running multiple apps on the same stack:
-
-- **One Auth0 tenant** — shared across all apps. Same user identity, SSO possible. Users don't need to re-register per app.
-- **One Spring Boot + Supabase per app** — complete data isolation. Apps are independent and unrelated.
-- **One Cloudflare Workers BFF per app** — each app has its own deployment.
-
-Auth0 setup per app:
-- One **Regular Web Application** (for the BFF)
-- One **API** (for the Spring Boot backend, defines the audience)
-- RBAC roles and permissions are scoped per API — no bleed between apps
+---
 
 ## Principles
 
-- Same stack across every project for consistency and reuse
-- BFF pattern keeps the frontend decoupled from backend changes
+- Same stack across every project — consistency enables reuse
+- BFF pattern for web; RFC 8252 for mobile — right tool for each platform
+- Single Spring Boot backend serves both web (via BFF) and mobile (direct)
 - Spring Modulith enforces module boundaries from day one
 - Git is the source of truth — no manual version labels
-- Restart Claude between major phases to keep context clean
