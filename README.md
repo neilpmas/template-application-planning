@@ -21,7 +21,7 @@ Architecture, decisions, and workflow guide for the template application stack. 
   Browser ────────► │  │  React App  │ ───► │  BFF (CF Workers)    │  │
   (HTTP/3)          │  └─────────────┘      └──────────┬───────────┘  │
                     └─────────────────────────────────────────────────┘
-                                                        │ gRPC-Web (HTTP/2)
+                                                        │ Connect protocol (HTTP/1.1)
                                                         │ Bearer token
                                                         ▼
   Mobile / Desktop ──────────────────────────────────►
@@ -63,7 +63,7 @@ Spring Boot validates JWTs from all clients identically — it doesn't distingui
 | Tailwind CSS | 4 | Styling |
 | shadcn/ui | — | Component library (Radix UI, copy-paste, you own the code) |
 | Turborepo | — | Monorepo — web, mobile, BFF as packages |
-| Cloudflare Workers | — | BFF, auth proxy, gRPC-Web → backend |
+| Cloudflare Workers | — | BFF, auth proxy, Connect protocol → backend |
 | [Bezzie](https://github.com/neilpmas/bezzie) | — | BFF OAuth 2.0 library (open source) |
 | Cloudflare KV | — | Session storage |
 | React Native | — | iOS and Android (Auth0 RN SDK, `expo-secure-store`) |
@@ -75,7 +75,7 @@ Spring Boot validates JWTs from all clients identically — it doesn't distingui
     mobile/     ← React Native (iOS + Android)
     bff/        ← Cloudflare Workers + Bezzie
   packages/
-    proto/      ← Protobuf definitions + generated TypeScript gRPC-Web client
+    proto/      ← Protobuf definitions + generated TypeScript Connect client
     types/      ← shared TypeScript types
     api-client/ ← shared API client
 ```
@@ -126,9 +126,15 @@ RBAC roles and permissions are scoped per API — no bleed between apps.
 HTTP/3 — handled automatically by Cloudflare. No configuration needed.
 
 ### BFF → Spring Boot
-**gRPC-Web over HTTP/2** — Cloudflare Workers calls Spring Boot via gRPC-Web using `fetch()`. Gives strongly typed Protobuf contracts and HTTP/2 efficiency without hitting the Workers runtime limitation of native gRPC (which requires HTTP/2 trailers, inaccessible via `fetch()`).
+**Connect protocol over HTTP/1.1** — Cloudflare Workers calls Spring Boot via [Connect protocol](https://connectrpc.com) (`createConnectTransport`, binary format) at `POST /connect/{service}/{method}`. Strongly typed Protobuf contracts, same `.proto`-generated clients as gRPC, but works over plain `fetch()`.
 
-> [Connect protocol](https://connectrpc.com) would be the ideal long-term choice but has no official Java implementation yet. Worth revisiting when it lands.
+**Why not native gRPC:** workerd (the Cloudflare Workers runtime) has no `http2.connect` — Workers cannot originate an HTTP/2 connection with trailers, which gRPC requires.
+
+**Why not gRPC-Web:** gRPC-Web is a *different wire format* from native gRPC (length-prefixed frames with a trailer-in-body encoding), not just gRPC-over-HTTP/1.1. A BFF built with `createGrpcWebTransport` talking to a Spring Boot backend serving plain gRPC (`grpc-spring-boot-starter` on port 9090) looks like it should work — both are "gRPC" — but the two speak incompatible wire formats. This was discovered the hard way: it *type-checks* and *compiles*, but every call fails at runtime. There's no gRPC-Web server implementation for Spring Boot to bridge the gap either.
+
+**The fix — Connect protocol:** Spring Boot has no official Connect server SDK, but the wire protocol itself is a documented, simple HTTP mapping: `POST /{package}.{Service}/{Method}` with a `application/proto` (or `application/json`) body. A `WebFilter` (`com.template.connect.ConnectFilter`) intercepts requests on `/connect/**`, uses reflection (`ConnectServiceRegistry`) to look up the matching gRPC `BindableService` method from the existing `.proto`-generated service definitions, invokes it, and serializes the response — so existing gRPC service implementations are reused as-is with zero duplication. This is a thin adapter, not a reimplementation of Connect.
+
+**Cloudflare Workers `fetch()` caveat:** `@connectrpc/connect-web` hardcodes `redirect: "error"` on its `fetch()` calls, which is valid in browsers but throws `TypeError: Invalid redirect value` under workerd (only `"follow"`/`"manual"` are supported there). The BFF wraps `fetch` (`workersFetch.ts`) to strip that option before delegating to the real `fetch()`.
 
 ### Mobile/Desktop → Spring Boot
 Standard HTTPS with Bearer token. REST by default.
@@ -172,7 +178,7 @@ React → BFF /auth/login → Auth0 (Authorization Code + PKCE)
 **Per-request flow:**
 ```
 React (session cookie) → BFF → validates session, refreshes token if expired
-                              → Spring Boot (gRPC-Web + Authorization: Bearer <token>)
+                              → Spring Boot (Connect protocol + Authorization: Bearer <token>)
 ```
 
 ### Mobile: RFC 8252 (OAuth for Native Apps)
