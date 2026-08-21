@@ -14,28 +14,31 @@ Architecture, decisions, and workflow guide for the template application stack. 
 
 ## Architecture Overview
 
-```
-                    ┌─────────────────────────────────────────────────┐
-                    │                  Cloudflare                      │
-                    │  ┌─────────────┐      ┌──────────────────────┐  │
-  Browser ────────► │  │  React App  │ ───► │  BFF (CF Workers)    │  │
-  (HTTP/3)          │  └─────────────┘      └──────────┬───────────┘  │
-                    └─────────────────────────────────────────────────┘
-                                                        │ gRPC-Web (HTTP/2)
-                                                        │ Bearer token
-                                                        ▼
-  Mobile / Desktop ──────────────────────────────────►
-  (HTTPS, Bearer token, direct)           ┌─────────────────────────┐
-                                          │  Spring Boot on Fly.io  │
-                                          │  (Spring Modulith)      │
-                                          └─────────────────────────┘
-                                                        │
-                                             ┌──────────┴──────────┐
-                                             │                     │
-                                             ▼                     ▼
-                                           Neon                 Auth0
-                                        (Postgres)       (JWKS endpoint —
-                                                         token validation)
+```mermaid
+C4Container
+    title Template Application — Container Diagram
+
+    Person(user, "User", "Web or mobile/desktop user")
+
+    System_Boundary(cf, "Cloudflare") {
+        Container(react, "React App", "React, Vite", "Web UI")
+        Container(bff, "BFF", "Cloudflare Workers, Bezzie", "Owns the OAuth flow, issues a session cookie, proxies authenticated requests to the backend")
+    }
+
+    Container(mobile, "React Native App", "React Native", "iOS/Android — bypasses the BFF, talks to the backend directly")
+    Container(backend, "Spring Boot Backend", "Java, WebFlux, Spring Modulith", "Core business logic, validates JWTs, hosted on Fly.io")
+
+    System_Ext(neon, "Neon", "Managed Postgres")
+    System_Ext(auth0, "Auth0", "Identity provider — JWKS endpoint, token validation")
+
+    Rel(user, react, "Uses", "HTTP/3")
+    Rel(user, mobile, "Uses", "HTTPS")
+    Rel(react, bff, "Calls", "same-origin")
+    Rel(bff, backend, "Calls", "Connect protocol, Bearer token")
+    Rel(mobile, backend, "Calls", "HTTPS, Bearer token, direct")
+    Rel(backend, neon, "Reads/writes", "R2DBC (app) / JDBC (Flyway migrations)")
+    Rel(backend, auth0, "Validates JWTs", "JWKS")
+    Rel(bff, auth0, "OAuth flow", "Authorization Code + PKCE")
 ```
 
 ### Client model
@@ -63,7 +66,7 @@ Spring Boot validates JWTs from all clients identically — it doesn't distingui
 | Tailwind CSS | 4 | Styling |
 | shadcn/ui | — | Component library (Radix UI, copy-paste, you own the code) |
 | Turborepo | — | Monorepo — web, mobile, BFF as packages |
-| Cloudflare Workers | — | BFF, auth proxy, gRPC-Web → backend |
+| Cloudflare Workers | — | BFF, auth proxy, Connect protocol → backend |
 | [Bezzie](https://github.com/neilpmas/bezzie) | — | BFF OAuth 2.0 library (open source) |
 | Cloudflare KV | — | Session storage |
 | React Native | — | iOS and Android (Auth0 RN SDK, `expo-secure-store`) |
@@ -75,7 +78,7 @@ Spring Boot validates JWTs from all clients identically — it doesn't distingui
     mobile/     ← React Native (iOS + Android)
     bff/        ← Cloudflare Workers + Bezzie
   packages/
-    proto/      ← Protobuf definitions + generated TypeScript gRPC-Web client
+    proto/      ← Protobuf definitions + generated TypeScript Connect client
     types/      ← shared TypeScript types
     api-client/ ← shared API client
 ```
@@ -84,12 +87,13 @@ Spring Boot validates JWTs from all clients identically — it doesn't distingui
 
 | Technology | Version | Purpose |
 |---|---|---|
-| Spring Boot | 4.0.6 | Core business logic |
-| Spring Modulith | 2.0.6 | Enforces module boundaries |
+| Spring Boot | 4.1.0 | Core business logic |
+| Spring Modulith | 2.1.0 | Enforces module boundaries |
 | Java | 25 | Language |
 | Maven | — | Build (wrapper included) |
 | Spring Data R2DBC | — | Reactive database access |
-| Flyway | 12.5.0 | Schema migrations |
+| Flyway | 13.3.0 | Schema migrations |
+| [connectrpc-spring-boot-starter](https://github.com/neilpmas/connectrpc-spring-boot) | 0.2.1 | Connect protocol endpoint (Maven Central) |
 
 ### Database
 
@@ -126,9 +130,15 @@ RBAC roles and permissions are scoped per API — no bleed between apps.
 HTTP/3 — handled automatically by Cloudflare. No configuration needed.
 
 ### BFF → Spring Boot
-**gRPC-Web over HTTP/2** — Cloudflare Workers calls Spring Boot via gRPC-Web using `fetch()`. Gives strongly typed Protobuf contracts and HTTP/2 efficiency without hitting the Workers runtime limitation of native gRPC (which requires HTTP/2 trailers, inaccessible via `fetch()`).
+**Connect protocol** — Cloudflare Workers calls Spring Boot via [Connect protocol](https://connectrpc.com) (binary format, `POST /connect/{service}/{method}`) using `fetch()`.
 
-> [Connect protocol](https://connectrpc.com) would be the ideal long-term choice but has no official Java implementation yet. Worth revisiting when it lands.
+**Why not native gRPC:** workerd (the Cloudflare Workers runtime) has no `http2.connect` — Workers cannot originate an HTTP/2 connection with trailers, which gRPC requires.
+
+**Why not gRPC-Web:** gRPC-Web is a *different wire format* from native gRPC (length-prefixed frames with a trailer-in-body encoding), not just gRPC-over-HTTP/1.1. It looked like the answer here but was never actually compatible with this backend's plain gRPC service (`net.devh:grpc-spring-boot-starter`) — the two speak incompatible wire formats, and there's no gRPC-Web server implementation for Spring Boot to bridge the gap.
+
+**The fix:** [`connectrpc-spring-boot-starter`](https://github.com/neilpmas/connectrpc-spring-boot) — a real, published library (Maven Central, `dev.neilmason:connectrpc-spring-boot-starter`) built specifically to fill this gap, since Connect protocol had no official Java/Spring implementation. It auto-configures a `/connect/{service}/{method}` endpoint directly from existing gRPC service definitions via reflection, so existing gRPC service implementations are reused as-is — no hand-rolled endpoint code in any app repo.
+
+**Cloudflare Workers `fetch()` caveat:** `@connectrpc/connect-web` hardcodes `redirect: "error"` on its `fetch()` calls, which is valid in browsers but throws `TypeError: Invalid redirect value` under workerd (only `"follow"`/`"manual"` are supported there). The BFF wraps `fetch` (`workersFetch.ts`) to strip that option before delegating to the real `fetch()`.
 
 ### Mobile/Desktop → Spring Boot
 Standard HTTPS with Bearer token. REST by default.
@@ -172,7 +182,7 @@ React → BFF /auth/login → Auth0 (Authorization Code + PKCE)
 **Per-request flow:**
 ```
 React (session cookie) → BFF → validates session, refreshes token if expired
-                              → Spring Boot (gRPC-Web + Authorization: Bearer <token>)
+                              → Spring Boot (Connect protocol + Authorization: Bearer <token>)
 ```
 
 ### Mobile: RFC 8252 (OAuth for Native Apps)
@@ -307,7 +317,7 @@ Notes:
 
 **GitHub Flow** — `main` is always deployable, all work on short-lived branches.
 
-- Branch naming: `claude/<short-description>` e.g. `claude/add-login-page`
+- Branch naming: `<short-description>` e.g. `add-login-page` — no `claude/` prefix
 - PRs are small and focused — one thing at a time
 - Branch protection on `main` — CI must pass before merge
 
