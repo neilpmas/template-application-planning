@@ -291,7 +291,14 @@ In order:
 
 > **Cloudflare Workers Builds naming:** if the native Git integration is connected, its auto-generated project name must match the `name` field in `wrangler.toml` *before* the first deploy that includes a route — a mismatch fails with `Can't deploy routes that are assigned to another worker.` Cloudflare's own resolution is to update `wrangler.toml` to match the Workers Builds project name (not rename the project), so set these to match from the start rather than debugging it on the first route-based deploy.
 
-### 3. Define the domain
+### 3. Recommended CI/CD additions (add once your app is real, not part of the template's own CI)
+
+Neither of these ships active in the template repos — the template itself never goes live, so wiring a real deploy or backup workflow into its own CI would just fail on every merge/schedule forever, against infrastructure that doesn't and shouldn't exist for it. Copy them into your new app's own repo once the corresponding real infrastructure from step 2 exists:
+
+- **Deploy-on-merge to Fly.io** — copy `todo-app-backend`'s `.github/workflows/deploy.yml` verbatim once you have a real Fly app. Closes the "CI passed but nobody actually shipped it" gap — triggers on the CI workflow's own success on `main`, deploys the exact commit CI validated. Needs a deploy-scoped `FLY_API_TOKEN` (`fly tokens create deploy`) as a repo secret.
+- **Nightly database backup to R2** — copy `todo-app-backend`'s `.github/workflows/backup.yml` once you have a real Neon database and an R2 bucket (Neon's free tier caps point-in-time restore at 6 hours). See that file directly for the hard-won gotchas (matching `pg_dump`'s version to Neon's server, a size/content floor so a dump against an empty database doesn't silently "succeed," never logging real row content since Actions logs are world-readable on a public repo). Needs `BACKUP_DATABASE_URL` (Neon's direct connection string) plus `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_ACCOUNT_ID`/`R2_BUCKET` as repo secrets.
+
+### 4. Define the domain
 
 Before writing feature code:
 - What does this product do? Who are the users? What is the core use case?
