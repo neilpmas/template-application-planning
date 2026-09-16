@@ -89,7 +89,7 @@ Spring Boot validates JWTs from all clients identically — it doesn't distingui
 |---|---|---|
 | Spring Boot | 4.1.0 | Core business logic |
 | Spring Modulith | 2.1.0 | Enforces module boundaries |
-| Java | 25 | Language |
+| Java | 26 | Language |
 | Maven | — | Build (wrapper included) |
 | Spring Data R2DBC | — | Reactive database access |
 | Flyway | 13.3.0 | Schema migrations |
@@ -223,7 +223,7 @@ Roles and permissions are defined in Auth0, included in the JWT as a `permission
 
 | Tool | Version | Install |
 |---|---|---|
-| Java | 25 | `brew install openjdk@25` or [SDKMAN](https://sdkman.io) |
+| Java | 26 | `brew install openjdk@26` or [SDKMAN](https://sdkman.io) |
 | Node.js | 20+ | [nodejs.org](https://nodejs.org) or `brew install node` |
 | npm | 11 | included with Node |
 | Docker | any | [Docker Desktop](https://www.docker.com/products/docker-desktop) |
