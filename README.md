@@ -298,6 +298,18 @@ Neither of these ships active in the template repos — the template itself neve
 - **Deploy-on-merge to Fly.io** — copy `todo-app-backend`'s `.github/workflows/deploy.yml` verbatim once you have a real Fly app. Closes the "CI passed but nobody actually shipped it" gap — triggers on the CI workflow's own success on `main`, deploys the exact commit CI validated. Needs a deploy-scoped `FLY_API_TOKEN` (`fly tokens create deploy`) as a repo secret.
 - **Nightly database backup to R2** — copy `todo-app-backend`'s `.github/workflows/backup.yml` once you have a real Neon database and an R2 bucket (Neon's free tier caps point-in-time restore at 6 hours). See that file directly for the hard-won gotchas (matching `pg_dump`'s version to Neon's server, a size/content floor so a dump against an empty database doesn't silently "succeed," never logging real row content since Actions logs are world-readable on a public repo). Needs `BACKUP_DATABASE_URL` (Neon's direct connection string) plus `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`/`R2_ACCOUNT_ID`/`R2_BUCKET` as repo secrets.
 
+### 3a. Optional: nudge stale Dependabot PRs
+
+Unlike the two above, this one ships in the template repos (`.github/workflows/nudge-stale-dependabot-prs.yml` in both frontend and backend), but it is inert until you opt in. A weekly job comments `@dependabot recreate` on any Dependabot PR open over 7 days, so a PR that is red because it's blocked on an upstream fix gets regenerated against current `main` and the current registry, and can auto-merge once the blocker clears, with nobody needing to remember to check back.
+
+To enable it in your new app's repos:
+1. Create a fine-grained PAT, scoped to just that repo, with **Pull requests: read/write** only.
+2. Add it as a repo secret named `DEPENDABOT_PAT` (needed per repo — secrets aren't inherited from the template). Dependabot rejects `@dependabot recreate` from the default `github-actions[bot]` actor ("only users with push access can use that command"), so `GITHUB_TOKEN` can't be used here.
+
+Without the secret the job skips cleanly and does nothing.
+
+> **Leave blocked Dependabot PRs open.** `@dependabot recreate` can't revive a closed PR, and closing one tells Dependabot to stop proposing that version. If a PR is red because of an upstream blocker, leave it open and let the weekly nudge retry it.
+
 ### 4. Define the domain
 
 Before writing feature code:
